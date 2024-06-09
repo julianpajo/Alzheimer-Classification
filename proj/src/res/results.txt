@@ -1,0 +1,19 @@
+Test Loss: 0.5748433470726013
+Test Accuracy: 0.8216145634651184
+
+Prediction Accuracy: 0.472243940578577
+
+
+                  precision    recall  f1-score   support
+
+    MildDemented       0.14      0.01      0.01       179
+ModerateDemented       0.00      0.00      0.00        12
+     NonDemented       0.50      0.84      0.62       640
+VeryMildDemented       0.35      0.15      0.21       448
+
+        accuracy                           0.47      1279
+       macro avg       0.25      0.25      0.21      1279
+    weighted avg       0.39      0.47      0.39      1279
+
+
+

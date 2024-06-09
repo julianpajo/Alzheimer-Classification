@@ -4,7 +4,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import cv2
-from joblib import dump
+from tensorflow.keras.optimizers.schedules import ExponentialDecay
+from tensorflow.keras.optimizers import RMSprop, Adam
 from sklearn.model_selection import train_test_split
 from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping, ModelCheckpoint
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
@@ -13,7 +14,8 @@ from tensorflow.keras.applications.vgg19 import VGG19
 from tensorflow.keras.layers import Input, Lambda, Dense, Flatten, Dropout
 from tensorflow.keras.models import Model
 from imblearn.over_sampling import SMOTE
-
+from tensorflow.keras.regularizers import l2
+from tensorflow.keras.layers import BatchNormalization
 
 # Set directories
 train_dir = '../dataset/train'
@@ -62,16 +64,6 @@ for i, class_name in enumerate(class_names):
 
 plt.savefig('res/image_per_category.png')
 
-
-# Function to preprocess images
-def preprocess_image(image_path, label):
-    image = cv2.imread(image_path)
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    image = cv2.resize(image, (224, 224))
-    image = image / 255.0
-    return image, label
-
-
 # Load image paths and labels
 images = []
 labels = []
@@ -83,12 +75,21 @@ for class_name in class_names:
 df = pd.DataFrame({'image': images, 'label': labels})
 
 Size = (128, 128)
+
+# Data Augmentation
 work_dr = ImageDataGenerator(
-    rescale=1. / 255
+    rescale=1. / 255,
+    width_shift_range=0.2,
+    height_shift_range=0.2,
+    shear_range=0.2,
+    zoom_range=0.2,
+    horizontal_flip=True
 )
+
 train_data_gen = work_dr.flow_from_dataframe(df, x_col='image', y_col='label', target_size=Size, batch_size=6500,
                                              shuffle=False)
 
+# Load the test data
 test_datagen = ImageDataGenerator(rescale=1. / 255)
 test_generator = test_datagen.flow_from_directory(
     test_dir,
@@ -102,21 +103,24 @@ for i in range(len(train_data_gen)):
 
 class_num = np.sort(['MildDemented', 'ModerateDemented', 'NonDemented', 'VeryMildDemented'])
 
+# Apply SMOTE to balance the dataset
 sm = SMOTE(random_state=42)
 train_data, train_labels = sm.fit_resample(train_data.reshape(-1, 128 * 128 * 3), train_labels)
-train_data = train_data.reshape(-1, 128,128, 3)
+train_data = train_data.reshape(-1, 128, 128, 3)
 print(train_data.shape, train_labels.shape)
 
-labels=[class_num[i] for i in np.argmax(train_labels,axis=1) ]
-plt.figure(figsize=(15,8))
-ax = sns.countplot(x=labels,palette='Set1')
-ax.set_xlabel("Class",fontsize=20)
-ax.set_ylabel("Count",fontsize=20)
-plt.title('The Number Of Samples For Each Class',fontsize=20)
+labels = [class_num[i] for i in np.argmax(train_labels, axis=1)]
+plt.figure(figsize=(15, 8))
+ax = sns.countplot(x=labels, palette='Set1')
+ax.set_xlabel("Class", fontsize=20)
+ax.set_ylabel("Count", fontsize=20)
+plt.title('The Number Of Samples For Each Class', fontsize=20)
 plt.grid(True)
 plt.xticks(rotation=45)
 plt.savefig('res/image_per_category_smote.png')
 
+
+# Split the data into training, validation, and test sets
 X_train, X_test1, y_train, y_test1 = train_test_split(train_data, train_labels, test_size=0.3, random_state=42,
                                                       shuffle=True, stratify=train_labels)
 X_val, X_test, y_val, y_test = train_test_split(X_test1, y_test1, test_size=0.5, random_state=42, shuffle=True,
@@ -124,24 +128,50 @@ X_val, X_test, y_val, y_test = train_test_split(X_test1, y_test1, test_size=0.5,
 
 vgg_base = VGG19(weights='imagenet', include_top=False, input_shape=(128, 128, 3))
 
+# Set the first 15 layers to be non-trainable
 for layer in vgg_base.layers:
     layer.trainable = False
 
-x = Flatten()(vgg_base.output) # Flatten the output layer to 1 dimension
-x = Dense(512, activation='relu')(x)
+# Set the last 5 layers to be trainable
+for layer in vgg_base.layers[-5:]:
+    layer.trainable = True
+
+# Add custom layers
+x = Flatten()(vgg_base.output)
+x = Dense(512, activation='relu', kernel_regularizer=l2(0.001))(x)
+x = BatchNormalization()(x)
 x = Dropout(0.5)(x)
-output = Dense(4, activation='softmax')(x)
+x = Dense(256, activation='relu', kernel_regularizer=l2(0.001))(x)
+x = BatchNormalization()(x)
+x = Dropout(0.5)(x)
+output = Dense(4, activation='softmax', kernel_regularizer=l2(0.001))(x)
+
 
 model = Model(inputs=vgg_base.input, outputs=output)
 
 model.summary()
 
-early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
-model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-hist = model.fit(X_train, y_train, epochs=50, validation_data=(X_val, y_val),
+# Set the callbacks
+early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+
+# Set the learning rate schedule
+initial_learning_rate = 0.001
+lr_schedule = ExponentialDecay(
+    initial_learning_rate,
+    decay_steps=10000,
+    decay_rate=0.9,
+    staircase=True
+)
+
+optimizer = Adam(learning_rate=lr_schedule)
+batch_size = 32
+
+model.compile(optimizer=optimizer, loss='categorical_crossentropy', metrics=['accuracy'])
+
+hist = model.fit(X_train, y_train, epochs=50, batch_size=batch_size, validation_data=(X_val, y_val),
                  callbacks=[early_stopping])
 
-dump(model, 'res/modello_cnr_alzheimer.joblib')
+model.save('res/modello_cnr_alzheimer.h5')
 
 # Evaluate the model on the test set
 test_loss, test_accuracy = model.evaluate(X_test, y_test)
