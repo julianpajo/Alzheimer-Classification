@@ -116,7 +116,6 @@ ax.set_xlabel("Class", fontsize=20)
 ax.set_ylabel("Count", fontsize=20)
 plt.title('The Number Of Samples For Each Class', fontsize=20)
 plt.grid(True)
-plt.xticks(rotation=45)
 plt.savefig('res/image_per_category_smote.png')
 
 
